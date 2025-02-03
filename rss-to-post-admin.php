@@ -1,17 +1,21 @@
 <?php
+/*
+File: rss-to-post-admin.php
+Description: Creates tool in the admin panel to allow feed management.
+Version: 1.5
+Author: mpowerpc@proton.me
+*/
 
 // Add settings page under Tools
 add_action('admin_menu', 'rss_to_post_add_admin_menu');
 
 // AJAX actions for managing feeds
 add_action('wp_ajax_rss_to_post_add_feed', 'rss_to_post_add_feed');
-add_action('wp_ajax_rss_to_post_remove_feed', 'rss_to_post_remove_feed');
 add_action('wp_ajax_rss_to_post_update_feed', 'rss_to_post_update_feed_handler');
+add_action('wp_ajax_rss_to_post_remove_feed', 'rss_to_post_remove_feed');
+add_action('wp_ajax_rss_to_post_remove_feed_posts', 'rss_to_post_remove_feed_posts');
 
-function rss_to_post_add_admin_menu() {
-	add_management_page('RSS to Post', 'RSS to Post', 'manage_options', 'rss_to_post', 'rss_to_post_options_page');
-}
-
+// Function to create management page
 function rss_to_post_options_page() {
 	global $wpdb;
 	$table_name = $wpdb->prefix . 'rss_to_post_feeds';
@@ -19,7 +23,7 @@ function rss_to_post_options_page() {
 	?>
     <div class="wrap">
         <h1>RSS to Post Settings</h1>
-        <table class="wp-list-table widefat fixed striped table-view-list rss-to-post-table">
+        <table class="wp-list-table widefat striped table-view-list rss-to-post-table">
             <thead>
             <tr>
                 <th><?php _e('Name', 'rss_to_post'); ?></th>
@@ -41,7 +45,8 @@ function rss_to_post_options_page() {
                     </td>
                     <td class="actions-column">
                         <button type="button" class="button update-feed" data-feed-id="<?php echo esc_attr($feed->id); ?>"><?php _e('Update Now', 'rss_to_post'); ?></button>
-                        <button type="button" class="button remove-feed" data-feed-id="<?php echo esc_attr($feed->id); ?>"><?php _e('Remove', 'rss_to_post'); ?></button>
+                        <button type="button" class="button remove-posts-feed" data-feed-id="<?php echo esc_attr($feed->id); ?>"><?php _e('Remove Posts', 'rss_to_post'); ?></button>
+                        <button type="button" class="button remove-feed" data-feed-id="<?php echo esc_attr($feed->id); ?>"><?php _e('Remove Feed', 'rss_to_post'); ?></button>
                     </td>
                 </tr>
 			<?php endforeach; ?>
@@ -134,11 +139,28 @@ function rss_to_post_options_page() {
                 });
             });
 
+            $('.remove-posts-feed').on('click', function(){
+                var feedId = $(this).data('feed-id');
+                if(confirm('Are you sure you want to remove all posts from this feed?')){
+                    $.post(ajaxurl, {
+                        action: 'rss_to_post_remove_feed_posts',
+                        feed_id: feedId,
+                        security: '<?php echo wp_create_nonce("rss_to_post_nonce"); ?>'
+                    }, function(response){
+                        if(response.success){
+                            alert('All posts from this feed have been removed.');
+                        } else {
+                            alert(response.data);
+                        }
+                    });
+                }
+            });
         })(jQuery);
     </script>
 	<?php
 }
 
+// Function to add feed to rss-to-post
 function rss_to_post_add_feed() {
 	check_ajax_referer('rss_to_post_nonce', 'security');
 
@@ -181,6 +203,7 @@ function rss_to_post_add_feed() {
 	}
 }
 
+// Function to remove feed from rss-to-post
 function rss_to_post_remove_feed() {
 	check_ajax_referer('rss_to_post_nonce', 'security');
 
@@ -189,11 +212,26 @@ function rss_to_post_remove_feed() {
 	}
 
 	global $wpdb;
-	$table_name = $wpdb->prefix . 'rss_to_post_feeds';
-
 	$feed_id = intval($_POST['feed_id']);
+	$table_name_feeds = $wpdb->prefix . 'rss_to_post_feeds';
+	$table_name_deleted = $wpdb->prefix . 'rss_to_post_deleted_guids';
 
-	$result = $wpdb->delete($table_name, array('id' => $feed_id));
+	// Get the feed
+	$feed = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table_name_feeds WHERE id = %d", $feed_id));
+
+	if (!$feed) {
+		wp_send_json_error('Feed not found.');
+	}
+
+	// Delete GUIDs associated with this feed from rss_to_post_deleted_guids
+	$wpdb->delete(
+		$table_name_deleted,
+		array('feed_id' => $feed_id),
+		array('%d')
+	);
+
+	// Delete the feed from the feeds table
+	$result = $wpdb->delete($table_name_feeds, array('id' => $feed_id));
 
 	if ($result !== false) {
 		wp_send_json_success();
@@ -202,6 +240,7 @@ function rss_to_post_remove_feed() {
 	}
 }
 
+// Function to update a feed via rss_to_post_update_feed
 function rss_to_post_update_feed_handler() {
 	check_ajax_referer('rss_to_post_nonce', 'security');
 
@@ -228,4 +267,65 @@ function rss_to_post_update_feed_handler() {
 	}
 }
 
+// Function to remove all posts from a feed
+function rss_to_post_remove_feed_posts() {
+	check_ajax_referer('rss_to_post_nonce', 'security');
+
+	if (!current_user_can('manage_options')) {
+		wp_send_json_error('Unauthorized');
+	}
+
+	$feed_id = intval($_POST['feed_id']);
+
+	if (empty($feed_id)) {
+		wp_send_json_error('Invalid feed ID.');
+	}
+
+	global $wpdb;
+	$table_name_deleted = $wpdb->prefix . 'rss_to_post_deleted_guids';
+
+	// Get all posts associated with the feed
+	$posts = get_posts(array(
+		'post_type'      => 'post',
+		'post_status'    => 'any',
+		'meta_key'       => 'rss_to_post_feed_id',
+		'meta_value'     => $feed_id,
+		'posts_per_page' => -1,
+		'fields'         => 'ids',
+	));
+
+	if (!empty($posts)) {
+		foreach ($posts as $post_id) {
+			// Get the GUID
+			$guid = get_post_meta($post_id, 'rss_to_post_guid', true);
+
+			if ($guid) {
+				// Insert the GUID and feed ID into the deleted GUIDs table
+				$wpdb->insert(
+					$table_name_deleted,
+					array(
+						'guid'    => $guid,
+						'feed_id' => $feed_id,
+					),
+					array(
+						'%s',
+						'%d',
+					)
+				);
+			}
+
+			// Delete associated attachments
+			rss_to_post_delete_associated_attachments($post_id);
+
+			wp_delete_post($post_id, true); // Permanently delete the post
+		}
+	}
+
+	wp_send_json_success();
+}
+
+// Function to add rss-to-post to tools
+function rss_to_post_add_admin_menu() {
+	add_management_page('RSS to Post', 'RSS to Post', 'manage_options', 'rss_to_post', 'rss_to_post_options_page');
+}
 ?>

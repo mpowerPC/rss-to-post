@@ -2,19 +2,31 @@
 /*
 Plugin Name: RSS to Post
 Description: Fetches multiple RSS feeds and creates posts based on the feed items. Allows admin to manage feeds.
-Version: 1.4
+Version: 1.5
 Author: mpowerpc@proton.me
 */
 
+// File Imports
 require_once plugin_dir_path(__FILE__) . 'rss-to-post-admin.php';
+require_once plugin_dir_path(__FILE__) . 'rss-to-post-database.php';
+require_once plugin_dir_path(__FILE__) . 'rss-to-post-images.php';
 
-global $rss_to_post_db_version;
-$rss_to_post_db_version = '1.1'; // Ensure this matches your current DB version
+// Plugin Hooks
+register_activation_hook(__FILE__, 'rss_to_post_activate');
+register_deactivation_hook(__FILE__, 'rss_to_post_deactivate');
 
-// Function to grab all feed
+// Cronjob Actions
+add_action('rss_to_post_cron_job', 'rss_to_post_fetch_and_create_posts');
+
+// Post Deletion Actions
+add_action('before_delete_post', 'rss_to_post_track_deleted_post');
+add_action('before_delete_post', 'rss_to_post_delete_associated_attachments');
+
+// Function to grab all feeds
 function rss_to_post_fetch_and_create_posts() {
 	global $wpdb;
 	$table_name = $wpdb->prefix . 'rss_to_post_feeds';
+	$table_name_deleted = $wpdb->prefix . 'rss_to_post_deleted_guids';
 
 	$feeds = $wpdb->get_results("SELECT * FROM $table_name");
 
@@ -22,15 +34,26 @@ function rss_to_post_fetch_and_create_posts() {
 		$rss = fetch_feed($feed->url);
 
 		if (!is_wp_error($rss)) {
-			$max_items = $rss->get_item_quantity(5);
+			$max_items = $rss->get_item_quantity(10);
 			$rss_items = $rss->get_items(0, $max_items);
 
 			foreach ($rss_items as $item) {
+				$guid            = $item->get_guid();
 				$post_title      = $item->get_title();
 				$post_content    = $item->get_content(); // HTML content
 				$post_date       = $item->get_date('Y-m-d H:i:s');
 				$post_categories = $item->get_categories();
 				$link            = $item->get_link();
+
+				$is_deleted = $wpdb->get_var($wpdb->prepare(
+					"SELECT COUNT(*) FROM $table_name_deleted WHERE guid = %s",
+					$guid,
+					$feed->id
+				));
+
+				if ($is_deleted) {
+					continue;
+				}
 
 				// Check if post already exists by GUID
 				$existing_post = get_posts(array(
@@ -82,6 +105,9 @@ function rss_to_post_fetch_and_create_posts() {
 						// Save GUID to prevent duplicates
 						add_post_meta($post_id, 'rss_to_post_guid', $item->get_id());
 
+						// Save the Feed id
+						add_post_meta($post_id, 'rss_to_post_feed_id', $feed->id);
+
 						// If an image URL was found, set it as the featured image
 						if ($image_url) {
 							$image_id = rss_to_post_media_sideload_image($image_url, $post_id, $post_title);
@@ -100,6 +126,7 @@ function rss_to_post_fetch_and_create_posts() {
 function rss_to_post_update_feed($feed_url, $author_id = 1) {
 	global $wpdb;
 	$table_name = $wpdb->prefix . 'rss_to_post_feeds';
+	$table_name_deleted = $wpdb->prefix . 'rss_to_post_deleted_guids';
 
 	// Get the feed details
 	$feed = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table_name WHERE url = %s", $feed_url));
@@ -117,11 +144,23 @@ function rss_to_post_update_feed($feed_url, $author_id = 1) {
 		$rss_items = $rss->get_items(0, $max_items);
 
 		foreach ($rss_items as $item) {
+			$guid            = $item->get_id();
 			$post_title      = $item->get_title();
 			$post_content    = $item->get_content();
 			$post_date       = $item->get_date('Y-m-d H:i:s');
 			$post_categories = $item->get_categories();
 			$link            = $item->get_link();
+
+			// Check if GUID is in deleted GUIDs table
+			$is_deleted = $wpdb->get_var($wpdb->prepare(
+				"SELECT COUNT(*) FROM $table_name_deleted WHERE guid = %s",
+				$guid,
+				$feed->id
+			));
+
+			if ($is_deleted) {
+				continue;
+			}
 
 			// Check if post already exists by GUID
 			$existing_post = get_posts(array(
@@ -172,6 +211,9 @@ function rss_to_post_update_feed($feed_url, $author_id = 1) {
 					// Save GUID to prevent duplicates
 					add_post_meta($post_id, 'rss_to_post_guid', $item->get_id());
 
+					// Save the Feed id
+					add_post_meta($post_id, 'rss_to_post_feed_id', $feed->id);
+
 					// If an image URL was found, set it as the featured image
 					if ($image_url) {
 						$image_id = rss_to_post_media_sideload_image($image_url, $post_id, $post_title);
@@ -187,7 +229,7 @@ function rss_to_post_update_feed($feed_url, $author_id = 1) {
 	}
 }
 
-// Helper function to append the message if needed
+// Function to append the message if needed
 function rss_to_post_append_message($post_content, $article_link, $post_title, $feed_url, $feed_name) {
 	// Parse the post content into a DOMDocument
 	$dom = new DOMDocument();
@@ -232,178 +274,67 @@ function rss_to_post_append_message($post_content, $article_link, $post_title, $
 	return $post_content . $message;
 }
 
-// Function to load image as into media
-function rss_to_post_media_sideload_image($image_url, $post_id, $desc = null) {
-	// Check if the image already exists in the media library
-	$media = get_posts(array(
-		'post_type'  => 'attachment',
-		'meta_key'   => '_source_url',
-		'meta_value' => $image_url,
-		'fields'     => 'ids',
-	));
-	if ($media) {
-		return $media[0]; // Return existing image ID
+// Function to track deleted posts in WordPress
+function rss_to_post_track_deleted_post($post_id) {
+	// Check if the post has our custom GUID meta key
+	$guid = get_post_meta($post_id, 'rss_to_post_guid', true);
+	$feed_id = get_post_meta($post_id, 'rss_to_post_feed_id', true);
+
+	if ($guid && $feed_id) {
+		global $wpdb;
+		$table_name_deleted = $wpdb->prefix . 'rss_to_post_deleted_guids';
+
+		// Insert the GUID and feed ID into the deleted GUIDs table
+		$wpdb->insert(
+			$table_name_deleted,
+			array(
+				'guid'    => $guid,
+				'feed_id' => $feed_id,
+			),
+			array(
+				'%s',
+				'%d',
+			)
+		);
 	}
 
-	// Download and sideload the image
-	require_once(ABSPATH . 'wp-admin/includes/media.php');
-	require_once(ABSPATH . 'wp-admin/includes/file.php');
-	require_once(ABSPATH . 'wp-admin/includes/image.php');
-
-	$tmp = download_url($image_url);
-	if (is_wp_error($tmp)) {
-		return $tmp;
-	}
-
-	$file_array = array();
-	$file_array['name']     = basename(parse_url($image_url, PHP_URL_PATH));
-	$file_array['tmp_name'] = $tmp;
-
-	// Check for download errors
-	if (is_wp_error($file_array['tmp_name'])) {
-		@unlink($file_array['tmp_name']);
-		return $file_array['tmp_name'];
-	}
-
-	$id = media_handle_sideload($file_array, $post_id, $desc);
-
-	// Check for handle sideload errors
-	if (is_wp_error($id)) {
-		@unlink($file_array['tmp_name']);
-		return $id;
-	}
-
-	// Save the original image URL
-	add_post_meta($id, '_source_url', $image_url);
-
-	return $id;
+	// Delete associated attachments
+	rss_to_post_delete_associated_attachments($post_id);
 }
 
-// Function to scrape website for article image
-function rss_to_post_get_image_from_article($url) {
-	// Fetch the HTML content of the article
-	$response = wp_remote_get($url);
+// Function to remove associated images of a deleted post
+function rss_to_post_delete_associated_attachments($post_id) {
+	// Check if the post has our custom GUID meta key
+	$guid = get_post_meta($post_id, 'rss_to_post_guid', true);
 
-	if (is_wp_error($response)) {
-		return '';
-	}
+	if ($guid) {
+		// Get all attachments associated with this post
+		$attachments = get_children(array(
+			'post_parent' => $post_id,
+			'post_type'   => 'attachment',
+			'numberposts' => -1,
+			'fields'      => 'ids',
+		));
 
-	$html = wp_remote_retrieve_body($response);
-
-	if (empty($html)) {
-		return '';
-	}
-
-	// Use DOMDocument to parse HTML (requires libxml extension)
-	libxml_use_internal_errors(true); // Suppress warnings
-
-	$doc = new DOMDocument();
-	$doc->loadHTML($html);
-	libxml_clear_errors();
-
-	$xpath = new DOMXPath($doc);
-
-	// Try to get Open Graph image
-	$meta_og_image = $xpath->query("//meta[@property='og:image']");
-	if ($meta_og_image->length > 0) {
-		$image_url = $meta_og_image->item(0)->getAttribute('content');
-		if (!empty($image_url)) {
-			return $image_url;
+		if ($attachments) {
+			foreach ($attachments as $attachment_id) {
+				// Permanently delete the attachment
+				wp_delete_attachment($attachment_id, true);
+			}
 		}
 	}
-
-	// Try to get Twitter image
-	$meta_twitter_image = $xpath->query("//meta[@name='twitter:image']");
-	if ($meta_twitter_image->length > 0) {
-		$image_url = $meta_twitter_image->item(0)->getAttribute('content');
-		if (!empty($image_url)) {
-			return $image_url;
-		}
-	}
-
-	// Find the first image in the content
-	$images = $doc->getElementsByTagName('img');
-	if ($images->length > 0) {
-		$image_url = $images->item(0)->getAttribute('src');
-		if (!empty($image_url)) {
-			// Resolve relative URLs
-			$image_url = rss_to_post_resolve_url($image_url, $url);
-			return $image_url;
-		}
-	}
-
-	return '';
 }
 
-// Function to return absolute url
-function rss_to_post_resolve_url($relative_url, $base_url) {
-	// If the URL is already absolute, return it
-	if (parse_url($relative_url, PHP_URL_SCHEME) != '') {
-		return $relative_url;
-	}
-
-	// Parse base URL and convert to components
-	$base = parse_url($base_url);
-	if ($relative_url[0] == '/') {
-		$path = '';
-	} else {
-		$path = dirname($base['path']) . '/';
-	}
-
-	// Build absolute URL
-	$abs = $base['scheme'] . '://' . $base['host'] . $path . $relative_url;
-	return $abs;
-}
-
-// Function to create or update the database table
-function rss_to_post_create_table() {
-	global $wpdb;
-	global $rss_to_post_db_version;
-
-	$table_name = $wpdb->prefix . 'rss_to_post_feeds';
-
-	$charset_collate = $wpdb->get_charset_collate();
-
-	$sql = "CREATE TABLE $table_name (
-        id mediumint(9) NOT NULL AUTO_INCREMENT,
-        name text NOT NULL,
-        url text NOT NULL,
-        author_id bigint(20) unsigned NOT NULL DEFAULT '1',
-        PRIMARY KEY (id)
-    ) $charset_collate;";
-
-	require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
-
-	dbDelta($sql);
-
-	update_option('rss_to_post_db_version', $rss_to_post_db_version);
-}
-
-// Function to upgrade the database table if needed
-function rss_to_post_upgrade_db() {
-	global $rss_to_post_db_version;
-	$installed_version = get_option('rss_to_post_db_version');
-
-	if ($installed_version != $rss_to_post_db_version) {
-		rss_to_post_create_table();
-	}
-}
-
-add_action('plugins_loaded', 'rss_to_post_upgrade_db');
-
-// Functions to check if plugin is activated
+// Functions to turn on cronjob
 function rss_to_post_activate() {
 	rss_to_post_create_table();
 	if (!wp_next_scheduled('rss_to_post_cron_job')) {
 		wp_schedule_event(time(), 'hourly', 'rss_to_post_cron_job');
 	}
 }
-register_activation_hook(__FILE__, 'rss_to_post_activate');
 
+// Functions to turn off cronjob
 function rss_to_post_deactivate() {
 	wp_clear_scheduled_hook('rss_to_post_cron_job');
 }
-register_deactivation_hook(__FILE__, 'rss_to_post_deactivate');
-
-add_action('rss_to_post_cron_job', 'rss_to_post_fetch_and_create_posts');
 ?>
