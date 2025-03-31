@@ -6,16 +6,13 @@ Version: 1.5
 Author: mpowerpc@proton.me
 */
 
-// Add settings page under Tools
 add_action('admin_menu', 'rss_to_post_add_admin_menu');
 
-// AJAX actions for managing feeds
 add_action('wp_ajax_rss_to_post_add_feed', 'rss_to_post_add_feed');
 add_action('wp_ajax_rss_to_post_update_feed', 'rss_to_post_update_feed_handler');
 add_action('wp_ajax_rss_to_post_remove_feed', 'rss_to_post_remove_feed');
 add_action('wp_ajax_rss_to_post_remove_feed_posts', 'rss_to_post_remove_feed_posts');
 
-// Function to create management page
 function rss_to_post_options_page() {
 	global $wpdb;
 	$table_name = $wpdb->prefix . 'rss_to_post_feeds';
@@ -160,7 +157,6 @@ function rss_to_post_options_page() {
 	<?php
 }
 
-// Function to add feed to rss-to-post
 function rss_to_post_add_feed() {
 	check_ajax_referer('rss_to_post_nonce', 'security');
 
@@ -203,7 +199,6 @@ function rss_to_post_add_feed() {
 	}
 }
 
-// Function to remove feed from rss-to-post
 function rss_to_post_remove_feed() {
 	check_ajax_referer('rss_to_post_nonce', 'security');
 
@@ -223,14 +218,12 @@ function rss_to_post_remove_feed() {
 		wp_send_json_error('Feed not found.');
 	}
 
-	// Delete GUIDs associated with this feed from rss_to_post_deleted_guids
 	$wpdb->delete(
 		$table_name_deleted,
 		array('feed_id' => $feed_id),
 		array('%d')
 	);
 
-	// Delete the feed from the feeds table
 	$result = $wpdb->delete($table_name_feeds, array('id' => $feed_id));
 
 	if ($result !== false) {
@@ -240,7 +233,6 @@ function rss_to_post_remove_feed() {
 	}
 }
 
-// Function to update a feed via rss_to_post_update_feed
 function rss_to_post_update_feed_handler() {
 	check_ajax_referer('rss_to_post_nonce', 'security');
 
@@ -267,7 +259,6 @@ function rss_to_post_update_feed_handler() {
 	}
 }
 
-// Function to remove all posts from a feed
 function rss_to_post_remove_feed_posts() {
 	check_ajax_referer('rss_to_post_nonce', 'security');
 
@@ -284,7 +275,6 @@ function rss_to_post_remove_feed_posts() {
 	global $wpdb;
 	$table_name_deleted = $wpdb->prefix . 'rss_to_post_deleted_guids';
 
-	// Get all posts associated with the feed
 	$posts = get_posts(array(
 		'post_type'      => 'post',
 		'post_status'    => 'any',
@@ -296,11 +286,9 @@ function rss_to_post_remove_feed_posts() {
 
 	if (!empty($posts)) {
 		foreach ($posts as $post_id) {
-			// Get the GUID
 			$guid = get_post_meta($post_id, 'rss_to_post_guid', true);
 
 			if ($guid) {
-				// Insert the GUID and feed ID into the deleted GUIDs table
 				$wpdb->insert(
 					$table_name_deleted,
 					array(
@@ -314,17 +302,15 @@ function rss_to_post_remove_feed_posts() {
 				);
 			}
 
-			// Delete associated attachments
 			rss_to_post_delete_associated_attachments($post_id);
 
-			wp_delete_post($post_id, true); // Permanently delete the post
+			wp_delete_post($post_id, true);
 		}
 	}
 
 	wp_send_json_success();
 }
 
-// Function to add rss-to-post to tools
 function rss_to_post_add_admin_menu() {
 	add_management_page('RSS to Post', 'RSS to Post', 'manage_options', 'rss_to_post', 'rss_to_post_options_page');
 }
