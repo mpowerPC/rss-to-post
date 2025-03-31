@@ -3,7 +3,7 @@
 Plugin Name: RSS to Post
 Description: Fetches multiple RSS feeds and creates posts based on the feed items. Allows admin to manage feeds.
 Version: 1.5
-Author: https://github.com/mpowerPC
+Author: mpowerpc@proton.me
 */
 
 require_once plugin_dir_path(__FILE__) . 'rss-to-post-admin.php';
