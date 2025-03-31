@@ -6,14 +6,11 @@ Version: 1.5
 Author: mpowerpc@proton.me
 */
 
-// Database Versioning
 global $rss_to_post_db_version;
-$rss_to_post_db_version = '1.3'; // Ensure this matches your current DB version
+$rss_to_post_db_version = '1.3';
 
-// Database Actions
 add_action('plugins_loaded', 'rss_to_post_upgrade_db');
 
-// Function to create database tables
 function rss_to_post_create_table() {
 	global $wpdb;
 	global $rss_to_post_db_version;
@@ -46,7 +43,6 @@ function rss_to_post_create_table() {
 	update_option('rss_to_post_db_version', $rss_to_post_db_version);
 }
 
-// Function to upgrade the database tables if needed
 function rss_to_post_upgrade_db() {
 	global $rss_to_post_db_version;
 	$installed_version = get_option('rss_to_post_db_version');
